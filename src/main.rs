@@ -4,6 +4,7 @@ use std::env;
 use std::fs;
 use anyhow::{Result, Context, bail};
 use clap::{Parser, Subcommand};
+use chrono::Utc;
 
 #[derive(Parser)]
 #[command(name = "cargo")]
@@ -31,6 +32,42 @@ struct Dockerize {
     /// Path to the Dockerfile (defaults to ./Dockerfile)
     #[arg(long, default_value = "Dockerfile")]
     dockerfile: String,
+    
+    /// Additional tags for the Docker image
+    #[arg(long, value_delimiter = ',')]
+    tags: Vec<String>,
+    
+    /// Application name
+    #[arg(long)]
+    application_name: Option<String>,
+    
+    /// OCI Image title
+    #[arg(long)]
+    title: Option<String>,
+    
+    /// OCI Image description
+    #[arg(long)]
+    description: Option<String>,
+    
+    /// OCI Image authors
+    #[arg(long)]
+    authors: Option<String>,
+    
+    /// OCI Image URL
+    #[arg(long)]
+    url: Option<String>,
+    
+    /// OCI Image source repository
+    #[arg(long)]
+    source: Option<String>,
+    
+    /// OCI Image vendor
+    #[arg(long)]
+    vendor: Option<String>,
+    
+    /// OCI Image licenses
+    #[arg(long)]
+    licenses: Option<String>,
 }
 
 fn main() -> Result<()> {
@@ -47,6 +84,9 @@ fn main() -> Result<()> {
     let image_name = args.name.unwrap_or_else(|| metadata.0.clone());
     let image_tag = args.tag.unwrap_or_else(|| metadata.1.clone());
     let image_full = format!("{}:{}", image_name, image_tag);
+    
+    // Get git revision if available
+    let git_revision = get_git_revision(&project_root).unwrap_or_else(|_| String::from("unknown"));
     
     // Verify Dockerfile exists
     let dockerfile_path = project_root.join(&args.dockerfile);
@@ -66,11 +106,73 @@ fn main() -> Result<()> {
         bail!("Cargo build failed");
     }
     
+    // Prepare Docker build command with OCI labels
+    let mut docker_build_args = vec![
+        "build".to_string(),
+        "-t".to_string(),
+        image_full.clone(),
+        "-f".to_string(),
+        args.dockerfile.clone(),
+    ];
+    
+    // Add additional tags if specified
+    for tag in &args.tags {
+        docker_build_args.push("-t".to_string());
+        docker_build_args.push(format!("{}:{}", image_name, tag));
+    }
+    
+    // Add OCI labels
+    let current_time = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    
+    // Add standard OCI labels
+    add_label(&mut docker_build_args, "org.opencontainers.image.created", &current_time);
+    add_label(&mut docker_build_args, "org.opencontainers.image.version", &image_tag);
+    add_label(&mut docker_build_args, "org.opencontainers.image.revision", &git_revision);
+    
+    // Add optional OCI labels if provided
+    if let Some(title) = &args.title {
+        add_label(&mut docker_build_args, "org.opencontainers.image.title", title);
+    } else {
+        add_label(&mut docker_build_args, "org.opencontainers.image.title", &image_name);
+    }
+    
+    if let Some(desc) = &args.description {
+        add_label(&mut docker_build_args, "org.opencontainers.image.description", desc);
+    }
+    
+    if let Some(authors) = &args.authors {
+        add_label(&mut docker_build_args, "org.opencontainers.image.authors", authors);
+    }
+    
+    if let Some(url) = &args.url {
+        add_label(&mut docker_build_args, "org.opencontainers.image.url", url);
+    }
+    
+    if let Some(source) = &args.source {
+        add_label(&mut docker_build_args, "org.opencontainers.image.source", source);
+    }
+    
+    if let Some(vendor) = &args.vendor {
+        add_label(&mut docker_build_args, "org.opencontainers.image.vendor", vendor);
+    }
+    
+    if let Some(licenses) = &args.licenses {
+        add_label(&mut docker_build_args, "org.opencontainers.image.licenses", licenses);
+    }
+    
+    // Add application_name label if provided
+    if let Some(app_name) = &args.application_name {
+        add_label(&mut docker_build_args, "application_name", app_name);
+    }
+    
+    // Add the build context
+    docker_build_args.push(".".to_string());
+    
     // Build Docker image
     println!("Building Docker image: {}...", image_full);
     let docker_build_status = Command::new("docker")
         .current_dir(&project_root)
-        .args(["build", "-t", &image_full, "-f", &args.dockerfile, "."])
+        .args(&docker_build_args)
         .status()
         .context("Failed to execute docker build")?;
         
@@ -100,6 +202,31 @@ fn main() -> Result<()> {
     
     println!("Dockerize completed successfully!");
     Ok(())
+}
+
+// Helper function to add a label to docker build args
+fn add_label(args: &mut Vec<String>, key: &str, value: &str) {
+    args.push("--label".to_string());
+    args.push(format!("{}={}", key, value));
+}
+
+// Get git revision (commit hash)
+fn get_git_revision(project_root: &Path) -> Result<String> {
+    let output = Command::new("git")
+        .current_dir(project_root)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .context("Failed to execute git command")?;
+    
+    if output.status.success() {
+        let hash = String::from_utf8(output.stdout)
+            .context("Invalid UTF-8 in git output")?
+            .trim()
+            .to_string();
+        Ok(hash)
+    } else {
+        bail!("Git command failed")
+    }
 }
 
 // Find the root of the cargo project
