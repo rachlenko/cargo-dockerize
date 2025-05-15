@@ -1,0 +1,9 @@
+[package]
+name = "cargo-dockerize"
+version = "0.1.0"
+edition = "2024"
+description = "A cargo subcommand to build and dockerize Rust applications"
+
+[dependencies]
+clap = { version = "4.4", features = ["derive"] }
+anyhow = "1.0"
